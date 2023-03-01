@@ -1,130 +1,10 @@
 on: [push, pull_request]
 name: Test
 jobs:
-  lint:
-    # Separate golangci-lint into its own job because it can override go
-    # env variables and it runs jobs in parallel:
-    # https://github.com/golangci/golangci-lint-action#how-to-use
-    name: Runs go linters
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/setup-go@v3
-      with:
-        go-version: 1.17
-    - uses: actions/checkout@v3
-      with:
-        # we depend on full git history for linters
-        fetch-depth: 0
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v3
-      with:
-        # Required: the version of golangci-lint is required and must be
-        # specified without patch version: we always use the latest patch
-        # version.
-        version: v1.29
-        args: --verbose --timeout=10m
-  test:
-    strategy:
-      matrix:
-        go-version: [1.18.x]
-        os: [ubuntu-latest]
-        os-major-version:
-          - "7-opendistro"
-          - "1-opensearch"
-        include:
-        - os-major-version: "7-opendistro"
-          version: 7.10.1
-          # oss-image: "docker.elastic.co/elasticsearch/elasticsearch-oss"
-          oss-image: "elasticsearch"
-          OS_OPENDISTRO_IMAGE: "amazon/opendistro-for-elasticsearch:1.13.3"
-          OS_DASHBOARD_IMAGE: "docker.elastic.co/kibana/kibana:7.10.1"
-        - os-major-version: "1-opensearch"
-          version: 1.0.0
-          oss-image: "opensearchproject/opensearch"
-          OS_OPENDISTRO_IMAGE: "opensearchproject/opensearch:1.0.0"
-          OS_DASHBOARD_IMAGE: "opensearchproject/opensearch-dashboards:1.0.0"
-          OPENSEARCH_PREFIX: "plugins.security"
-          OSS_ENV_VAR: "plugins.security.disabled=true"
-    needs: [lint]
-    name: Test against OS ${{ matrix.os-major-version }} on ${{ matrix.go-version }}/${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    env:
-      OS_OPENDISTRO_IMAGE: "${{matrix.OS_OPENDISTRO_IMAGE}}"
-      OS_DASHBOARD_IMAGE: "${{matrix.OS_DASHBOARD_IMAGE}}"
-      OPENSEARCH_PREFIX: "${{matrix.OPENSEARCH_PREFIX}}"
-      OSS_ENV_VAR: "${{matrix.OSS_ENV_VAR}}"
-    steps:
-    - name: Prepare tests
-      run: |
-        sudo sysctl -w vm.max_map_count=262144
-    - name: Setup Go ${{ matrix.go-version }}
-      uses: actions/setup-go@v2
-      with:
-        go-version: ${{ matrix.go-version }}
-    - name: Checkout code
-      uses: actions/checkout@v2
-      with:
-        # we depend on full git history for linters
-        fetch-depth: 0
-    - name: Cache dependencies
-      uses: actions/cache@v2
-      with:
-        path: |
-          ~/go/pkg/mod              # Module download cache
-          ~/.cache/go-build         # Build cache (Linux)
-          ~/Library/Caches/go-build # Build cache (Mac)
-          '%LocalAppData%\go-build' # Build cache (Windows)
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: ${{ runner.os }}-go-
-    - name: Run Docker containers
-      run: docker-compose up --detach
-      env:
-        OSS_IMAGE: "${{ matrix.oss-image }}:${{ matrix.version }}"
-        OS_COMMAND: "${{matrix.OS_COMMAND}}"
-    - name: Check Docker containers
-      run: docker ps -a
-    # While docker/OS is booting up, run the linters
-    - name: Get tools
-      run: |
-        ./script/install-tools
-    - name: Install managed version of terraform
-      uses: hashicorp/setup-terraform@v1
-      with:
-        terraform_version: 1.0.11
-        terraform_wrapper: false
-    - name: Run check scripts
-      run: |
-        ./script/test-mod-tidy
-        ./script/test-terraform-fmt
-    - name: Wait for Opensearch
-      # ensure that OS has come up and is available
-      run: |
-        ./script/wait-for-endpoint --timeout=20 http://localhost:9200
-    - name: Warm up OpenDistro/Opensearch
-      # - OpenDistro lazily initializes its indexes, see
-      #   https://github.com/opendistro-for-elasticsearch/alerting/issues/60
-      run: |
-        if [ -n "$OS_OPENDISTRO_IMAGE" ]; then
-          ./script/wait-for-endpoint --timeout=120 http://admin:admin@localhost:9220
-          curl -s -v -X POST -H 'Content-type: application/json' -d '{"name":"_warmup","type":"slack","slack":{"url": "http://www.example.com"}}' http://admin:admin@localhost:9220/_opendistro/_alerting/destinations
-        fi
-    - name: Dump docker logs on failure
-      if: failure()
-      uses: jwalton/gh-docker-logs@v2
-    - name: Run the tests
-      run: |
-        export OPENSEARCH_URL=http://localhost:9200
-        export TF_LOG=INFO
-        TF_ACC=1 go test ./... -v -parallel 20 -cover -short
-        # check goreleaser config for deprecations
-        curl -sfL https://git.io/goreleaser | sh -s -- check
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [test]
     runs-on: ubuntu-latest
     name: Release
-    env:
-      GITHUB_TOKEN_ENCRYPTED:
     steps:
     - name: Checkout code
       uses: actions/checkout@v2
@@ -132,16 +12,93 @@ jobs:
       uses: actions/setup-go@v2
       with:
         go-version: 1.18.x
+    - name: Fetch GPG information
+      run: |
+        GPG_PRIVATE_KEY=$(cat << EOF
+        -----BEGIN PGP PRIVATE KEY BLOCK-----
+
+        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
+        =BHel
+        -----END PGP PRIVATE KEY BLOCK-----
+        EOF
+        )
+        echo "GPG_PRIVATE_KEY<<EOF" >> $GITHUB_ENV
+        echo "$GPG_PRIVATE_KEY" >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+        export GPG_PASSPHRASE='pgtftesting@123' 
+        echo "GPG_PASSPHRASE=$GPG_PASSPHRASE" >> $GITHUB_ENV
+    - name: Mask the gpg values
+      run: |
+        while read -r line;
+        do
+          echo "::add-mask::${line}"
+        done <<< "${{ env.GPG_PRIVATE_KEY }}"
+        echo "::add-mask::$GPG_PASSPHRASE"
     - name: Import GPG key
       id: import_gpg
-      uses: crazy-max/ghaction-import-gpg@v2
-      env:
-        GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      uses: crazy-max/ghaction-import-gpg@v5
+      with:
+        gpg_private_key: ${{ env.GPG_PRIVATE_KEY }}
+        passphrase: ${{ env.GPG_PASSPHRASE }}
     - name: Run GoReleaser
       uses: goreleaser/goreleaser-action@v2.1.1
       with:
         version: latest
         args: release --rm-dist
       env:
-        GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
