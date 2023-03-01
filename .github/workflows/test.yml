@@ -132,17 +132,12 @@ jobs:
       uses: actions/setup-go@v2
       with:
         go-version: 1.18.x
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        role-to-assume: ${{ secrets.TERRAFORM_PROVIDER_ROLE }}
-        aws-region: us-east-1
     - name: Fetch GPG information
       run: |
-        export GPG_PRIVATE_KEY=$(aws secretsmanager get-secret-value --secret-id opensearch-terraform-provider-signing-key-private --query SecretString --output text)
+        export GPG_PRIVATE_KEY=${{ secrets.GPG_PRIVATE_KEY }}
         echo "::add-mask::$GPG_PRIVATE_KEY" 
         echo "GPG_PRIVATE_KEY=$GPG_PRIVATE_KEY" >> $GITHUB_ENV
-        export GPG_PASSPHRASE=$(aws secretsmanager get-secret-value --secret-id opensearch-terraform-provider-signing-key-passphrase --query SecretString --output text)
+        export GPG_PASSPHRASE=${{ secrets.GPG_PASSPHRASE }}
         echo "::add-mask::$GPG_PASSPHRASE" 
         echo "GPG_PASSPHRASE=$GPG_PASSPHRASE" >> $GITHUB_ENV
     - name: Import GPG key
