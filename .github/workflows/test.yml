@@ -1,7 +1,5 @@
 on: [push, pull_request]
 name: Test
-permissions:
-  contents: write
 jobs:
   lint:
     # Separate golangci-lint into its own job because it can override go
